@@ -1,0 +1,129 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+-- CONFIGURATION
+local PARRY_KEY = Enum.KeyCode.F
+local DETECTION_RANGE = 15 -- Radius of the ring (in Studs)
+
+-- COOLDOWN AND TIMER RULES
+local SUCCESS_COOLDOWN = 90
+local FAIL_COOLDOWN = 60
+local PARRY_WINDOW = 0.8
+
+local IsAutoParryActive = true
+local currentCooldown = 0
+local lastParryTime = 0
+local isWaitingForResult = false
+
+-- 1. CREATE VISUAL DETECTION RING AROUND CHARACTER
+local function createDetectionRing(character)
+    local hrp = character:WaitForChild("HumanoidRootPart")
+    
+    -- Check if ring already exists, if so destroy it
+    if hrp:FindFirstChild("DetectionRing") then
+        hrp.DetectionRing:Destroy()
+    end
+    
+    -- Create the visual cylinder ring
+    local ring = Instance.new("CylinderHandleAdornment")
+    ring.Name = "DetectionRing"
+    ring.Radius = DETECTION_RANGE
+    ring.InnerRadius = DETECTION_RANGE - 0.3 -- Thickness of the ring
+    ring.Height = 0.1
+    ring.Color3 = Color3.fromRGB(255, 0, 0) -- Neon Red color
+    ring.AlwaysOnTop = false
+    ring.ZIndex = 5
+    ring.Adornee = hrp
+    ring.CFrame = CFrame.new(0, -2.5, 0) * CFrame.Angles(math.rad(90), 0, 0) -- Position at character's feet
+    ring.Parent = hrp
+end
+
+if LocalPlayer.Character then createDetectionRing(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(createDetectionRing)
+
+-- 2. PARRY EXECUTION LOGIC
+local function performParry(enemyAttackedImmediately)
+    lastParryTime = tick()
+    isWaitingForResult = true
+    
+    -- Enter 1-second defensive state
+    VirtualInputManager:SendKeyEvent(true, PARRY_KEY, false, game)
+    task.wait(0.05)
+    VirtualInputManager:SendKeyEvent(false, PARRY_KEY, false, game)
+    print("🛡️ Defensive state activated for 1 second!")
+
+    if enemyAttackedImmediately then
+        currentCooldown = SUCCESS_COOLDOWN
+        isWaitingForResult = false
+        print("🎯 SUCCESS! Killer attack blocked within Ring. Cooldown: " .. SUCCESS_COOLDOWN .. "s")
+    else
+        task.delay(PARRY_WINDOW, function()
+            if isWaitingForResult then
+                isWaitingForResult = false
+                currentCooldown = FAIL_COOLDOWN
+                print("❌ FAIL! No attack inside Ring within 0.8s. Cooldown: " .. FAIL_COOLDOWN .. "s")
+            end
+        end)
+    end
+end
+
+-- 3. VFX DETECTION BACKUP
+local function setupVfxDetection(character)
+    character.DescendantAdded:Connect(function(desc)
+        if isWaitingForResult and (tick() - lastParryTime <= PARRY_WINDOW) then
+            if desc:IsA("ParticleEmitter") or desc:IsA("MeshPart") or desc:IsA("SpecialMesh") then
+                local name = string.lower(desc.Name)
+                if string.find(name, "vfx") or string.find(name, "parry") or string.find(name, "slash") or string.find(name, "red") then
+                    currentCooldown = SUCCESS_COOLDOWN
+                    isWaitingForResult = false
+                    print("🎯 SUCCESS! Parry VFX detected inside Ring. Cooldown: " .. SUCCESS_COOLDOWN .. "s")
+                end
+            end
+        end
+    end)
+end
+
+if LocalPlayer.Character then setupVfxDetection(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(setupVfxDetection)
+
+-- 4. MAIN RING MONITORING LOOP
+RunService.Heartbeat:Connect(function()
+    if not IsAutoParryActive then return end
+    
+    local character = LocalPlayer.Character
+    if not character or (tick() - lastParryTime < currentCooldown) then return end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    for _, enemy in pairs(Players:GetPlayers()) do
+        if enemy ~= LocalPlayer and enemy.Character then
+            local enemyHrp = enemy.Character:FindFirstChild("HumanoidRootPart")
+            local enemyHumanoid = enemy.Character:FindFirstChildOfClass("Humanoid")
+            
+            if enemyHrp and enemyHumanoid and enemyHumanoid.Health > 0 then
+                -- Calculate distance to see if Killer is INSIDE the ring
+                local distance = (hrp.Position - enemyHrp.Position).Magnitude
+                
+                local tool = enemy.Character:FindFirstChildOfClass("Tool")
+                local isKillerAttacking = tool and tool:FindFirstChild("Activated")
+                
+                -- Strict condition: Must be INSIDE the visual ring AND attacking
+                if distance <= DETECTION_RANGE and isKillerAttacking then
+                    if not isWaitingForResult then
+                        performParry(true)
+                        break
+                    elseif isWaitingForResult and (tick() - lastParryTime <= PARRY_WINDOW) then
+                        currentCooldown = SUCCESS_COOLDOWN
+                        isWaitingForResult = false
+                        print("🎯 SUCCESS! Intercepted inside 0.8s window. Cooldown: " .. SUCCESS_COOLDOWN .. "s")
+                        break
+                    end
+                end
+            end
+        end
+    end
+end)
+
+print("🚀 Auto Parry with Visual Ring Loaded! Range: " .. DETECTION_RANGE .. " Studs.")
